@@ -1,0 +1,8 @@
+{
+  "name": "Universal AI Chat",
+  "description": "An AI chat interface integrating with OpenRouter for utilizing varied LLM models.",
+  "requestFramePermissions": [
+    "microphone"
+  ],
+  "majorCapabilities": []
+}

@@ -1,0 +1,9 @@
+{
+  "name": "Universal AI Chat",
+  "short_name": "Universal AI",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#131314",
+  "theme_color": "#131314",
+  "description": "A universal AI chat assistant."
+}
