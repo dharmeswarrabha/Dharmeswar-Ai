@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useRef } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { Menu, X, Plus, Settings, Send, MessageSquareText, Copy, ThumbsUp, ThumbsDown, Volume2, Share2, MoreVertical, Mic, AudioLines, Check, Square, Split, RefreshCw, Globe, Folder, Image as ImageIcon, LayoutGrid, Search, Bot, Trash2 } from 'lucide-react';
+import { Menu, X, Plus, Settings, Send, MessageSquareText, Copy, ThumbsUp, ThumbsDown, Volume2, Share2, MoreVertical, Mic, AudioLines, Check, Square, Split, RefreshCw, Globe, Folder, Image as ImageIcon, LayoutGrid, Search, Bot, Trash2, Download, Video } from 'lucide-react';
 
 interface Message {
   role: 'user' | 'assistant';
@@ -18,7 +18,7 @@ interface Chat {
   messages: Message[];
 }
 
-const MessageActions = ({ content }: { content: string }) => {
+const MessageActions = ({ content, onGenerateVideo }: { content: string, onGenerateVideo?: (text: string) => void }) => {
   const [copied, setCopied] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [thumbState, setThumbState] = useState<'up'|'down'|null>(null);
@@ -66,8 +66,10 @@ const MessageActions = ({ content }: { content: string }) => {
           title: 'AI Chat',
           text: content,
         });
-      } catch (err) {
-        console.error('Share failed', err);
+      } catch (err: any) {
+        if (err.name !== 'AbortError') {
+          console.error('Share failed', err);
+        }
       }
     } else {
       handleCopy();
@@ -80,6 +82,15 @@ const MessageActions = ({ content }: { content: string }) => {
       <button onClick={handleCopy} className="p-1.5 hover:bg-gemini-surface hover:text-white rounded-md transition-colors" title="Copy">
         {copied ? <Check className="w-[18px] h-[18px] text-green-500" strokeWidth={2} /> : <Copy className="w-[18px] h-[18px]" strokeWidth={2} />}
       </button>
+      {onGenerateVideo && (
+        <button 
+          onClick={() => onGenerateVideo(`Generate a Veo 3 video for: ${content.substring(0, 100)}...`)} 
+          className="p-1.5 hover:bg-gemini-surface hover:text-white rounded-md transition-colors" 
+          title="Generate Video from this"
+        >
+          <Video className="w-[18px] h-[18px]" strokeWidth={2} />
+        </button>
+      )}
       <button onClick={() => setThumbState(thumbState === 'up' ? null : 'up')} className={`p-1.5 rounded-md transition-colors ${thumbState === 'up' ? 'bg-gemini-surface text-white' : 'hover:bg-gemini-surface hover:text-white'}`} title="Good response">
         <ThumbsUp className="w-[18px] h-[18px]" strokeWidth={2} />
       </button>
@@ -137,6 +148,9 @@ export default function App() {
   const [model, setModel] = useState<string>(
     () => localStorage.getItem('universal_ai_model') || 'google/gemini-2.5-pro'
   );
+  const [imageModel, setImageModel] = useState<string>(
+    () => localStorage.getItem('universal_ai_image_model') || 'flux'
+  );
   const [chats, setChats] = useState<Chat[]>(() => {
     const saved = localStorage.getItem('universal_ai_chats');
     return saved ? JSON.parse(saved) : [];
@@ -156,6 +170,7 @@ export default function App() {
   // Settings Form State
   const [tempApiKey, setTempApiKey] = useState('');
   const [tempModel, setTempModel] = useState('');
+  const [tempImageModel, setTempImageModel] = useState('');
 
   const [showChatOptions, setShowChatOptions] = useState<string | null>(null);
   const longPressTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -233,7 +248,8 @@ export default function App() {
     localStorage.setItem('universal_ai_chats', JSON.stringify(chats));
     localStorage.setItem('universal_ai_key', apiKey);
     localStorage.setItem('universal_ai_model', model);
-  }, [chats, apiKey, model]);
+    localStorage.setItem('universal_ai_image_model', imageModel);
+  }, [chats, apiKey, model, imageModel]);
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -255,8 +271,28 @@ export default function App() {
     }
   };
 
-  const handleSend = async () => {
-    const text = inputText.trim();
+  const handleImageDownload = async (url: string) => {
+    try {
+      const response = await fetch(url);
+      const blob = await response.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      const isVideo = url.match(/\.(mp4|webm|ogg)$/i) || blob.type.startsWith('video');
+      const ext = isVideo ? (blob.type.split('/')[1] || 'mp4') : (blob.type.split('/')[1] || 'png');
+      a.download = `generated-${isVideo ? 'video' : 'image'}-${Date.now()}.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(blobUrl);
+    } catch (error) {
+      console.error('Error downloading image:', error);
+      window.open(url, '_blank');
+    }
+  };
+
+  const handleSend = async (forcedText?: string | React.MouseEvent | React.UIEvent) => {
+    const text = (typeof forcedText === 'string' ? forcedText : inputText).trim();
     if (!text || isGenerating || !currentChat) return;
 
     if (!apiKey) {
@@ -287,7 +323,31 @@ export default function App() {
     try {
       // Get the updated chat message history since React state may not be flushed synchronously
       const currentMessages = [...currentChat.messages, newUserMessage];
-      const apiMessages = currentMessages.map(m => ({ role: m.role, content: m.content }));
+      const systemPrompt = {
+        role: 'system', 
+        content: `You are Dharmeswar AI, a helpful AI assistant. 
+If the user asks you to generate, create, or draw an image, picture, or photo (in any language, such as Hindi 'image banao', English 'generate image', etc.), you MUST generate the image by including this EXACT markdown in your response:
+
+![Image](https://image.pollinations.ai/prompt/{encoded_prompt}?width=1024&height=1024&nologo=1&seed={seed}&model=${imageModel})
+
+IMPORTANT RULES FOR IMAGES:
+1. Replace {encoded_prompt} with a highly detailed, descriptive English prompt.
+2. URL-encode the prompt (replace spaces with %20).
+3. Replace {seed} with a random number.
+4. DO NOT put any newlines between the closing bracket ] and opening parenthesis (.
+5. Do not use code blocks for the image markdown.
+
+If the user asks for the weather (like "The Weather Channel", "weather pin code 110001", or "weather of Delhi"), you MUST act like "The Weather Channel" and provide a very detailed, full forecast. You MUST also show a detailed weather report image by including this exact markdown in your response:
+
+![Weather](https://wttr.in/{encoded_location}.png)
+
+Replace {encoded_location} with the URL-encoded location name or pin code (replace spaces with %20, e.g., New%20York). Explain the details nicely in a "The Weather Channel" style.`
+      };
+
+      const apiMessages = [
+        systemPrompt,
+        ...currentMessages.map(m => ({ role: m.role, content: m.content }))
+      ];
 
       const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
         method: 'POST',
@@ -295,7 +355,7 @@ export default function App() {
           'Authorization': `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
           'HTTP-Referer': window.location.href, // Required by OpenRouter
-          'X-Title': 'Universal AI Chat'        // Required by OpenRouter
+          'X-Title': 'Dharmeswar AI Chat'        // Required by OpenRouter
         },
         body: JSON.stringify({
           model: model,
@@ -310,24 +370,6 @@ export default function App() {
 
       const data = await response.json();
       let aiContent = data.choices[0].message.content;
-
-      // Local intercept for image generation to populate Images section
-      let imagePrompt = null;
-      const generateMatch = userText.toLowerCase().match(/^(?:generate|draw|create) (?:an? )?(?:image|picture|photo) of (.*)/i);
-      const simpleMatch = userText.toLowerCase().match(/^(?:image|picture|photo) of (.*)/i);
-      
-      if (generateMatch && generateMatch[1]) {
-        imagePrompt = generateMatch[1];
-      } else if (simpleMatch && simpleMatch[1]) {
-        imagePrompt = simpleMatch[1];
-      } else if (userText.toLowerCase().includes('generate image')) {
-        imagePrompt = userText.toLowerCase().replace('generate image', '').trim() || 'random image';
-      }
-                             
-      if (imagePrompt) {
-        const imageUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(imagePrompt)}?width=1024&height=1024&nologo=1&seed=${Math.floor(Math.random() * 10000)}`;
-        aiContent += `\n\nHere is your generated image:\n![${imagePrompt}](${imageUrl})`;
-      }
 
       setChats(prevChats => prevChats.map(c => {
         if (c.id === currentChatId) {
@@ -359,12 +401,14 @@ export default function App() {
   const openSettings = () => {
     setTempApiKey(apiKey);
     setTempModel(model);
+    setTempImageModel(imageModel);
     setIsSettingsOpen(true);
   };
 
   const saveSettings = () => {
     setApiKey(tempApiKey.trim());
     setModel(tempModel.trim() || 'google/gemini-2.5-pro');
+    setImageModel(tempImageModel);
     setIsSettingsOpen(false);
   };
 
@@ -440,7 +484,16 @@ export default function App() {
         }`}
       >
         <div className="px-4 py-5 flex items-center justify-between">
-          <span className="font-semibold text-[19px] tracking-wide cursor-pointer hover:text-gray-300 transition-colors">Dharmeswar Ai</span>
+          <div className="flex items-center gap-2 cursor-pointer group">
+            <img 
+              src="/logo.png" 
+              alt="Logo" 
+              referrerPolicy="no-referrer"
+              className="w-8 h-8 rounded-full object-cover border-2 border-transparent group-hover:border-gemini-border transition-all" 
+              onError={(e) => { e.currentTarget.src = "https://ui-avatars.com/api/?name=DA&background=000&color=fff"; e.currentTarget.onerror = null; }}
+            />
+            <span className="font-semibold text-[19px] tracking-wide group-hover:text-gray-300 transition-colors">Dharmeswar AI</span>
+          </div>
           <div className="flex items-center gap-1.5 bg-[#171717] rounded-full px-1 py-1 border border-[#303030]">
             <button className="text-gray-300 hover:text-white p-1 rounded-full transition-colors">
                <Search className="w-[18px] h-[18px]" strokeWidth={2.5} />
@@ -578,7 +631,7 @@ export default function App() {
               <Menu className="w-6 h-6" />
             </button>
             <h1 className="font-medium text-lg flex items-center gap-2 capitalize">
-              {currentView === 'chat' ? 'Dharmeswar Ai' : currentView}
+              {currentView === 'chat' ? 'Dharmeswar AI' : currentView}
               {currentView === 'chat' && (
                 <span className="text-xs bg-gemini-surface text-gray-400 px-2 py-1 rounded-md border border-gemini-border hidden sm:inline-block">
                  {model.split('/').pop()}
@@ -594,9 +647,40 @@ export default function App() {
             <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-6 scroll-smooth">
               {(!currentChat || currentChat.messages.length === 0) ? (
                 <div className="h-full flex flex-col items-center justify-center text-center text-gray-400 space-y-4">
-                  <MessageSquareText className="w-16 h-16 text-gray-600" strokeWidth={1.5} />
+                  <Bot className="w-16 h-16 text-gray-600 mb-2" strokeWidth={1.5} />
                   <h2 className="text-2xl font-medium text-gray-200">How can I help you today?</h2>
-                  <p className="max-w-md text-sm">Enter a prompt below to start a new conversation. Don't forget to configure your API key in settings.</p>
+                  <p className="max-w-md text-sm mb-6">Enter a prompt below to start a new conversation. Don't forget to configure your API key in settings.</p>
+                  
+                  <div className="flex flex-wrap justify-center gap-3 max-w-2xl mt-4">
+                    <button 
+                      onClick={() => handleSend('Generate an image of a futuristic city with flying cars')}
+                      className="flex items-center gap-2 bg-gemini-surface hover:bg-[#303030] text-gray-300 py-2.5 px-4 rounded-xl border border-gemini-border transition-colors text-sm"
+                    >
+                      <ImageIcon className="w-4 h-4 text-purple-400" />
+                      Image generation
+                    </button>
+                    <button 
+                      onClick={() => handleSend('Help me write a professional email')}
+                      className="flex items-center gap-2 bg-gemini-surface hover:bg-[#303030] text-gray-300 py-2.5 px-4 rounded-xl border border-gemini-border transition-colors text-sm"
+                    >
+                      <MessageSquareText className="w-4 h-4 text-blue-400" />
+                      Write an email
+                    </button>
+                    <button 
+                      onClick={() => handleSend('What is the Naino/Nano model?')}
+                      className="flex items-center gap-2 bg-gemini-surface hover:bg-[#303030] text-gray-300 py-2.5 px-4 rounded-xl border border-gemini-border transition-colors text-sm"
+                    >
+                      <Bot className="w-4 h-4 text-green-400" />
+                      Learn about models
+                    </button>
+                    <button 
+                      onClick={() => handleSend('Tell me about the Veo 3 model capabilities')}
+                      className="flex items-center gap-2 bg-gemini-surface hover:bg-[#303030] text-gray-300 py-2.5 px-4 rounded-xl border border-gemini-border transition-colors text-sm"
+                    >
+                      <Globe className="w-4 h-4 text-orange-400" />
+                      Explore Veo 3
+                    </button>
+                  </div>
                 </div>
               ) : (
                 currentChat.messages.map((msg, idx) => (
@@ -609,9 +693,70 @@ export default function App() {
                       {msg.role === 'assistant' ? (
                         <div>
                           <div className="prose prose-invert max-w-none">
-                            <ReactMarkdown>{msg.content}</ReactMarkdown>
+                            <ReactMarkdown
+                              components={{
+                                a: ({node, ...props}) => {
+                                  const isVideo = props.href?.match(/\.(mp4|webm|ogg)$/i) || props.href?.includes('video');
+                                  if (isVideo) {
+                                    return (
+                                      <div className="relative group inline-block my-2 w-full max-w-2xl">
+                                        <video src={props.href} controls className="rounded-lg shadow-md w-full" />
+                                        <button
+                                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); props.href && handleImageDownload(props.href); }}
+                                          className="absolute top-2 right-2 p-2 bg-black/60 rounded-lg text-white opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity hover:bg-black/80 flex items-center gap-1.5 text-sm font-medium backdrop-blur-sm shadow-sm z-10"
+                                          title="Download Video"
+                                        >
+                                          <Download className="w-4 h-4" />
+                                          <span className="hidden sm:inline">Download</span>
+                                        </button>
+                                      </div>
+                                    );
+                                  }
+                                  return <a {...props} target="_blank" rel="noreferrer" className="text-gemini-accent hover:underline" />;
+                                },
+                                img: ({node, ...props}) => {
+                                  const isVideo = props.src?.match(/\.(mp4|webm|ogg)$/i) || props.src?.includes('video');
+                                  if (isVideo) {
+                                     return (
+                                      <div className="relative group inline-block my-2 w-full max-w-2xl">
+                                        <video src={props.src} controls className="rounded-lg shadow-md w-full" />
+                                        <button
+                                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); props.src && handleImageDownload(props.src); }}
+                                          className="absolute top-2 right-2 p-2 bg-black/60 rounded-lg text-white opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity hover:bg-black/80 flex items-center gap-1.5 text-sm font-medium backdrop-blur-sm shadow-sm z-10"
+                                          title="Download Video"
+                                        >
+                                          <Download className="w-4 h-4" />
+                                          <span className="hidden sm:inline">Download</span>
+                                        </button>
+                                      </div>
+                                     );
+                                  }
+                                  return (
+                                  <div className="relative group inline-block my-2">
+                                    <img 
+                                      {...props} 
+                                      className="rounded-lg shadow-md max-w-full cursor-pointer transition-transform hover:opacity-95" 
+                                      alt={props.alt || "Generated Output"} 
+                                      referrerPolicy="no-referrer"
+                                      onClick={() => props.src && window.open(props.src, '_blank')}
+                                    />
+                                    <button
+                                      onClick={(e) => { e.preventDefault(); e.stopPropagation(); props.src && handleImageDownload(props.src); }}
+                                      className="absolute top-2 right-2 p-2 bg-black/60 rounded-lg text-white opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity hover:bg-black/80 flex items-center gap-1.5 text-sm font-medium backdrop-blur-sm shadow-sm z-10"
+                                      title="Download Image"
+                                    >
+                                      <Download className="w-4 h-4" />
+                                      <span className="hidden sm:inline">Download</span>
+                                    </button>
+                                  </div>
+                                )
+                                }
+                              }}
+                            >
+                              {msg.content}
+                            </ReactMarkdown>
                           </div>
-                          <MessageActions content={msg.content} />
+                          <MessageActions content={msg.content} onGenerateVideo={handleSend} />
                         </div>
                       ) : (
                         <div className="whitespace-pre-wrap">{msg.content}</div>
@@ -764,14 +909,47 @@ export default function App() {
               
               <div>
                 <label className="block text-sm font-medium text-gray-300 mb-1">Model Name</label>
-                <input 
-                  type="text" 
-                  value={tempModel}
-                  onChange={(e) => setTempModel(e.target.value)}
-                  className="w-full bg-gemini-bg border border-gemini-border rounded-lg px-3 py-2 text-white focus:outline-none focus:border-gemini-accent focus:ring-1 focus:ring-gemini-accent" 
-                  placeholder="google/gemini-2.5-pro" 
-                />
-                <p className="text-xs text-gray-400 mt-1">Must match OpenRouter model IDs (e.g., google/gemini-pro, openai/gpt-4o)</p>
+                <div className="flex flex-col gap-2">
+                  <select 
+                    value={tempModel}
+                    onChange={(e) => setTempModel(e.target.value)}
+                    className="w-full bg-gemini-bg border border-gemini-border rounded-lg px-3 py-2 text-white focus:outline-none focus:border-gemini-accent focus:ring-1 focus:ring-gemini-accent"
+                  >
+                    <option value="google/gemini-2.5-pro">Gemini 2.5 Pro (Default)</option>
+                    <option value="google/gemini-2.5-flash">Gemini 2.5 Flash</option>
+                    <option value="google/veo-3">Google Veo 3</option>
+                    <option value="meta-llama/llama-3.2-1b-instruct">Llama 3.2 Nano (1B)</option>
+                    <option value="meta-llama/llama-3-8b-instruct">Llama 3 8B</option>
+                    <option value="openai/gpt-4o-mini">GPT-4o Mini</option>
+                    <option value="anthropic/claude-3-haiku">Claude 3 Haiku</option>
+                    <option value={tempModel}>Custom: {tempModel}</option>
+                  </select>
+                  <input 
+                    type="text" 
+                    value={tempModel}
+                    onChange={(e) => setTempModel(e.target.value)}
+                    className="w-full bg-gemini-bg border border-gemini-border rounded-lg px-3 py-2 text-white focus:outline-none focus:border-gemini-accent focus:ring-1 focus:ring-gemini-accent" 
+                    placeholder="google/gemini-2.5-pro" 
+                  />
+                </div>
+                <p className="text-xs text-gray-400 mt-1">Select a preset or type an OpenRouter model ID</p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Image Generation Model</label>
+                <select 
+                  value={tempImageModel}
+                  onChange={(e) => setTempImageModel(e.target.value)}
+                  className="w-full bg-gemini-bg border border-gemini-border rounded-lg px-3 py-2 text-white focus:outline-none focus:border-gemini-accent focus:ring-1 focus:ring-gemini-accent"
+                >
+                  <option value="flux">Flux (Default)</option>
+                  <option value="flux-realism">Flux Realism</option>
+                  <option value="flux-anime">Flux Anime</option>
+                  <option value="flux-3d">Flux 3D</option>
+                  <option value="any-dark">Any Dark</option>
+                  <option value="turbo">Turbo</option>
+                </select>
+                <p className="text-xs text-gray-400 mt-1">Select the model used for generating images.</p>
               </div>
             </div>
             
